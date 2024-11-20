@@ -1,0 +1,441 @@
+import speech_recognition as sr
+from gtts import gTTS
+import playsound
+import os
+import json
+from datetime import datetime, timedelta
+import random
+import uuid
+import time
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+import string
+
+class AsistenteMedico:
+   def __init__(self):
+       self.recognizer = sr.Recognizer()
+       # Ajustes del reconocedor
+       self.recognizer.dynamic_energy_threshold = True
+       self.recognizer.energy_threshold = 2000
+       self.recognizer.pause_threshold = 1
+       self.recognizer.phrase_threshold = 0.3
+       self.recognizer.non_speaking_duration = 0.5
+       
+       self.temp_dir = "temp_audio"
+       if not os.path.exists(self.temp_dir):
+           os.makedirs(self.temp_dir)
+
+       # NLTK inicialización
+       try:
+           nltk.data.find('tokenizers/punkt')
+           nltk.data.find('corpora/stopwords')
+       except LookupError:
+           print("Descargando recursos de NLTK...")
+           nltk.download('punkt')
+           nltk.download('stopwords')
+           print("Recursos descargados correctamente")
+
+       try:
+           self.stop_words = set(stopwords.words('spanish'))
+       except:
+           print("Descargando stopwords en español...")
+           nltk.download('stopwords')
+           self.stop_words = set(stopwords.words('spanish'))
+
+       # Palabras clave para NLP
+       self.palabras_clave = {
+           'agendar': ['agendar', 'programar', 'sacar', 'pedir', 'quiero', 'necesito', 'cita', 'consulta', 'reservar', 'apartar', 'solicitar', 'dar'],
+           'cancelar': ['cancelar', 'anular', 'eliminar', 'quitar', 'borrar', 'remover', 'deshacer', 'cancelación'],
+           'consultar': ['horarios', 'disponible', 'disponibilidad', 'cuando', 'ver', 'mostrar', 'hay', 'libre', 'agenda', 'consultar']
+       }
+       
+       self.horarios_manana = [
+            {"hora": "9:00", "display": "nueve de la mañana"},
+            {"hora": "9:30", "display": "nueve y media de la mañana"},
+            {"hora": "10:00", "display": "diez de la mañana"},
+            {"hora": "10:30", "display": "diez y media de la mañana"},
+            {"hora": "11:00", "display": "once de la mañana"},
+            {"hora": "11:30", "display": "once y media de la mañana"}
+        ]
+       
+       self.horarios_tarde = [
+            {"hora": "2:00", "display": "dos de la tarde"},
+            {"hora": "2:30", "display": "dos y media de la tarde"},
+            {"hora": "3:00", "display": "tres de la tarde"},
+            {"hora": "3:30", "display": "tres y media de la tarde"},
+            {"hora": "4:00", "display": "cuatro de la tarde"},
+            {"hora": "4:30", "display": "cuatro y media de la tarde"}
+        ]
+       
+       self.respuestas = {
+           'preguntar_fecha': [
+               "¿Para qué día te gustaría la cita?",
+               "¿Qué día te vendría mejor?",
+               "¿Cuándo te gustaría venir a consulta?"
+           ],
+           'preguntar_horario': [
+               "¿Prefieres en la mañana o en la tarde?",
+               "¿Qué momento del día te viene mejor?",
+               "¿Te va mejor en la mañana o en la tarde?"
+           ],
+           'confirmar': [
+               "¡Perfecto! Tu cita quedó agendada",
+               "¡Listo! Te espero entonces",
+               "Muy bien, quedó registrada tu cita"
+           ],
+           'despedida': [
+               "¡Hasta luego! Que tengas un buen día",
+               "Fue un gusto ayudarte. ¡Que estés bien!",
+               "¡Gracias por tu visita! Hasta pronto"
+           ]
+       }
+       
+       self.cargar_citas()
+   
+   def analizar_texto(self, texto):
+        if not texto:
+            return None
+            
+        texto = texto.lower()
+        
+        # Detección más precisa de intenciones
+        if any(palabra in texto for palabra in ['cancelar', 'anular', 'eliminar']):
+            return 'cancelar'
+        elif any(palabra in texto for palabra in ['horarios', 'disponible', 'disponibilidad']):
+            return 'consultar'
+        elif any(palabra in texto for palabra in ['agendar', 'cita', 'consulta', 'reservar']):
+            return 'agendar'
+        
+        return None
+
+   def escuchar(self):
+        with sr.Microphone() as source:
+            print("Escuchando...")
+            # Ajustes optimizados
+            self.recognizer.dynamic_energy_threshold = False  # Deshabilitar ajuste dinámico
+            self.recognizer.energy_threshold = 4000  # Aumentar sensibilidad
+            self.recognizer.pause_threshold = 1.5  # Más tiempo para pausas
+            self.recognizer.adjust_for_ambient_noise(source, duration=2)  # Más tiempo de ajuste
+            
+            try:
+                print("Puede hablar...")
+                audio = self.recognizer.listen(source, 
+                                             timeout=20,  # Más tiempo de espera
+                                             phrase_time_limit=10)  # Límite razonable por frase
+                print("Procesando...")
+                texto = self.recognizer.recognize_google(audio, language="es-CO")
+                print(f"Has dicho: {texto}")
+                return texto.lower()
+            except sr.WaitTimeoutError:
+                print("Tiempo de espera agotado")
+                self.hablar("¿Me podrías repetir eso por favor?")
+                return ""
+            except sr.UnknownValueError:
+                print("No se pudo entender el audio")
+                self.hablar("No te escuché bien, ¿podrías repetirlo?")
+                return ""
+            except Exception as e:
+                print(f"Error: {e}")
+                self.hablar("Hubo un problema, ¿podrías decirlo de nuevo?")
+                return ""
+
+   def interpretar_fecha(self, texto):
+        texto = texto.lower()
+        fecha_actual = datetime.now()
+        
+        # Expresiones comunes
+        if "hoy" in texto:
+            return fecha_actual.strftime("%d de %B")
+        elif "mañana" in texto:
+            fecha = fecha_actual + timedelta(days=1)
+            return fecha.strftime("%d de %B")
+        elif "pasado mañana" in texto:
+            fecha = fecha_actual + timedelta(days=2)
+            return fecha.strftime("%d de %B")
+        
+        # Días específicos
+        dias = {
+            'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2,
+            'jueves': 3, 'viernes': 4, 'sábado': 5, 'sabado': 5
+        }
+        
+        # Buscar próximo/siguiente/este
+        es_proximo = any(palabra in texto for palabra in ['próximo', 'proximo', 'siguiente', 'este'])
+        
+        for dia, valor in dias.items():
+            if dia in texto:
+                dias_hasta = (valor - fecha_actual.weekday()) % 7
+                if dias_hasta == 0 and not es_proximo:
+                    dias_hasta = 7
+                fecha_objetivo = fecha_actual + timedelta(days=dias_hasta)
+                return fecha_objetivo.strftime("%d de %B")
+        
+        # Intentar interpretar fechas numéricas
+        try:
+            # Buscar patrones como "5 de noviembre" o "5 noviembre"
+            meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+            
+            for mes in meses:
+                if mes in texto:
+                    # Buscar el número antes del mes
+                    partes = texto.split()
+                    for i, parte in enumerate(partes):
+                        if mes in parte and i > 0:
+                            try:
+                                dia = int(''.join(filter(str.isdigit, partes[i-1])))
+                                if 1 <= dia <= 31:
+                                    fecha = fecha_actual.replace(day=dia, month=meses.index(mes)+1)
+                                    if fecha < fecha_actual:
+                                        fecha = fecha.replace(year=fecha.year + 1)
+                                    return fecha.strftime("%d de %B")
+                            except:
+                                continue
+        except:
+            pass
+            
+        return texto
+
+   def sugerir_horarios(self, periodo, preferencia=''):
+       horarios = self.horarios_manana if periodo == "mañana" else self.horarios_tarde
+       
+       if "temprano" in preferencia:
+           return horarios[:3]  # Primeros 3 horarios
+       elif "tarde" in preferencia:
+           return horarios[-3:]  # Últimos 3 horarios
+       else:
+           return horarios  # Todos los horarios
+
+   def hablar(self, texto):
+        print(f"Asistente: {texto}")
+        try:
+            archivo = os.path.join(self.temp_dir, f'temp_{str(uuid.uuid4())}.mp3')
+            # Aumentar la velocidad y reducir el tiempo de espera
+            tts = gTTS(text=texto, lang='es', tld='com.co', slow=False)
+            tts.save(archivo)
+            playsound.playsound(archivo, block=False)  # Reproducción no bloqueante
+            time.sleep(0.05)  # Reducir tiempo de espera
+            os.remove(archivo)
+        except Exception as e:
+            print(f"Error al procesar el audio: {str(e)}")
+
+   def cargar_citas(self):
+       try:
+           with open('citas.json', 'r', encoding='utf-8') as file:
+               self.database = json.load(file)
+       except FileNotFoundError:
+           self.database = {"citas": []}
+           self.guardar_citas()
+
+   def guardar_citas(self):
+       with open('citas.json', 'w', encoding='utf-8') as file:
+           json.dump(self.database, file, indent=4, ensure_ascii=False)
+
+   def verificar_disponibilidad(self, fecha, periodo):
+        citas_dia = [cita for cita in self.database["citas"] if cita["fecha"] == fecha]
+        horarios_ocupados = [cita["hora"] for cita in citas_dia]
+        
+        if periodo == "mañana":
+            horarios_disponibles = [h for h in self.horarios_manana if h["hora"] not in horarios_ocupados]
+        else:
+            horarios_disponibles = [h for h in self.horarios_tarde if h["hora"] not in horarios_ocupados]
+            
+        return horarios_disponibles
+
+   def buscar_citas(self, nombre):
+       return [cita for cita in self.database["citas"] 
+               if cita["nombre"].lower() == nombre.lower()]
+
+   def cancelar_cita(self):
+       self.hablar("¿Me podrías decir tu nombre completo?")
+       nombre = self.escuchar()
+       
+       if not nombre or "no" in nombre:
+           self.hablar("De acuerdo, ¿necesitas algo más?")
+           return
+           
+       citas = self.buscar_citas(nombre)
+       if not citas:
+           self.hablar("No encontré citas agendadas a tu nombre. ¿Quieres verificar con otro nombre?")
+           return
+           
+       if len(citas) > 1:
+           self.hablar("Encontré varias citas a tu nombre. Te las voy a mencionar:")
+           for i, cita in enumerate(citas, 1):
+               self.hablar(f"Cita {i}: {cita['fecha']} a las {cita['hora']}")
+           self.hablar("¿Cuál quieres cancelar? Dime el número")
+           seleccion = self.escuchar()
+           try:
+               indice = int(seleccion) - 1
+               cita_a_cancelar = citas[indice]
+           except:
+               self.hablar("No pude identificar cuál cita quieres cancelar")
+               return
+       else:
+           cita_a_cancelar = citas[0]
+       
+       self.hablar(f"¿Confirmas que quieres cancelar tu cita del {cita_a_cancelar['fecha']} a las {cita_a_cancelar['hora']}?")
+       confirmacion = self.escuchar()
+       
+       if "si" in confirmacion or "sí" in confirmacion:
+           self.database["citas"].remove(cita_a_cancelar)
+           self.guardar_citas()
+           self.hablar("Tu cita ha sido cancelada. ¿Necesitas agendar una nueva cita?")
+       else:
+           self.hablar("De acuerdo, tu cita se mantiene. ¿Necesitas algo más?")
+
+   def agendar_cita(self):
+       # Preguntar y procesar fecha
+       self.hablar(random.choice(self.respuestas['preguntar_fecha']))
+       fecha_input = self.escuchar()
+       
+       if not fecha_input or "no" in fecha_input:
+           self.hablar("De acuerdo, ¿necesitas algo más?")
+           return
+           
+       fecha = self.interpretar_fecha(fecha_input)
+       
+       # Preguntar preferencia de horario
+       self.hablar(random.choice(self.respuestas['preguntar_horario']))
+       periodo = self.escuchar()
+       
+       if not periodo or "no" in periodo:
+           self.hablar("De acuerdo, ¿necesitas algo más?")
+           return
+           
+       periodo = "mañana" if "mañana" in periodo else "tarde"
+       
+       # Preguntar preferencia específica de horario
+       self.hablar("¿Prefieres más temprano o más tarde?")
+       preferencia = self.escuchar()
+       
+       # Verificar disponibilidad y sugerir horarios
+       horarios = self.verificar_disponibilidad(fecha, periodo)
+       horarios_sugeridos = self.sugerir_horarios(periodo, preferencia)
+       horarios_disponibles = [h for h in horarios if h in horarios_sugeridos]
+       
+       if not horarios_disponibles:
+           self.hablar(f"Lo siento, no hay horarios disponibles que se ajusten a tu preferencia. ¿Quieres ver otros horarios?")
+           return
+       
+       # Mostrar horarios disponibles
+      # Mostrar horarios disponibles
+       if horarios_disponibles:
+            if len(horarios_disponibles) == 1:
+                self.hablar(f"Para el {fecha} solo tengo disponible a las {horarios_disponibles[0]['display']}. ¿Te gustaría este horario?")
+            else:
+                horarios_texto = ", ".join([h["display"] for h in horarios_disponibles[:-1]])
+                ultimo_horario = horarios_disponibles[-1]["display"]
+                self.hablar(f"Para el {fecha} tengo estos horarios: {horarios_texto} y {ultimo_horario}. ¿Cuál prefieres?")
+       hora_input = self.escuchar()
+       
+       if not hora_input or "no" in hora_input:
+           self.hablar("De acuerdo, ¿necesitas algo más?")
+           return
+       
+       # Encontrar la hora seleccionada
+       hora_seleccionada = None
+       for h in horarios_disponibles:
+           if h["hora"] in hora_input:
+               hora_seleccionada = h
+               break
+       
+       if not hora_seleccionada:
+           self.hablar("Lo siento, no pude identificar el horario. ¿Podrías repetirlo?")
+           return
+       
+       # Preguntar nombre
+       self.hablar("¿Me puedes decir tu nombre completo?")
+       nombre = self.escuchar()
+       
+       if not nombre or "no" in nombre:
+           self.hablar("De acuerdo, ¿necesitas algo más?")
+           return
+       
+       # Confirmar datos
+       self.hablar(f"¿Confirmas tu cita para el {fecha} a las {hora_seleccionada['display']}?")
+       confirmacion = self.escuchar()
+       
+       if "si" in confirmacion or "sí" in confirmacion:
+           nueva_cita = {
+               "nombre": nombre,
+               "fecha": fecha,
+               "hora": hora_seleccionada["hora"],
+               "estado": "programada"
+               }
+           self.database["citas"].append(nueva_cita)
+           self.guardar_citas()
+           self.hablar(f"{random.choice(self.respuestas['confirmar'])} para el {fecha} a las {hora_seleccionada['display']}. ¿Necesitas algo más?")
+       else:
+           self.hablar("De acuerdo, no agendaré la cita. ¿Necesitas algo más?")
+
+   def procesar_consulta(self, texto):
+        if not texto:
+            return True
+
+        if "adios" in texto or "gracias" in texto or "hasta luego" in texto:
+            self.hablar(random.choice(self.respuestas['despedida']))
+            return False
+
+        intencion = self.analizar_texto(texto)
+        print(f"Intención detectada: {intencion}")  # Para depuración
+        
+        if intencion == 'agendar':
+            self.agendar_cita()
+        elif intencion == 'cancelar':
+            self.cancelar_cita()
+        elif intencion == 'consultar':
+            self.hablar("¿Para qué día quieres consultar la disponibilidad?")
+            fecha = self.escuchar()
+            if fecha:
+                self.hablar("¿Prefieres ver horarios de mañana o tarde?")
+                periodo = self.escuchar()
+                if periodo:
+                    periodo = "mañana" if "mañana" in periodo else "tarde"
+                    horarios = self.verificar_disponibilidad(fecha, periodo)
+                    if horarios:
+                        horarios_texto = ", ".join([h["display"] for h in horarios])
+                        self.hablar(f"Para el {fecha} tengo estos horarios: {horarios_texto}")
+                    else:
+                        self.hablar(f"Lo siento, no hay horarios disponibles para ese día en la {periodo}")
+        else:
+            # Mensaje más claro sobre las opciones disponibles
+            self.hablar("Puedo ayudarte a agendar una cita, cancelar una existente o consultar horarios disponibles. ¿Qué deseas hacer?")
+
+        return True
+   
+   def validar_fecha(self, fecha):
+        try:
+            # Convertir la fecha a datetime para validación
+            fecha_obj = datetime.strptime(fecha, "%d de %B")
+            fecha_actual = datetime.now()
+            
+            # Ajustar el año
+            fecha_obj = fecha_obj.replace(year=fecha_actual.year)
+            if fecha_obj < fecha_actual:
+                fecha_obj = fecha_obj.replace(year=fecha_actual.year + 1)
+            
+            # Validar que no sea fin de semana
+            if fecha_obj.weekday() >= 5:
+                return False, "Lo siento, no atendemos los fines de semana"
+            
+            # Validar que no sea muy lejana (por ejemplo, más de 3 meses)
+            if (fecha_obj - fecha_actual).days > 90:
+                return False, "Lo siento, solo agendamos citas hasta 3 meses de anticipación"
+                
+            return True, fecha_obj.strftime("%d de %B")
+        except:
+            return False, "No pude entender esa fecha. ¿Podrías decirla de otra forma?"
+
+   def iniciar(self):
+       self.hablar("¡Hola! Soy tu asistente médico virtual. ¿En qué puedo ayudarte?")
+       
+       while True:
+           consulta = self.escuchar()
+           if not self.procesar_consulta(consulta):
+               break
+
+if __name__ == "__main__":
+   asistente = AsistenteMedico()
+   asistente.iniciar()
